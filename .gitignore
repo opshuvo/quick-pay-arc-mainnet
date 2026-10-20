@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+
+# Foundry / Solidity build artefacts
+contracts/out/
+contracts/cache/
+
+# Environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Circle secrets
+.circle/
+
+# Sandbox runtime files — not source code
+traces.jsonl
+console.jsonl
+
+# Logs
+*.log
+/tmp/
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Bun
+.bun-version
+
+# Nested repo clone created during project import — excluded from parent repo
+quick-pay-arc-mainnet/
+
+# Foundry lib symlink (managed by forge, not committed)
+lib/

@@ -1,0 +1,338 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Quick Pay — Design System v3
+   Arc Mainnet · USDC Payments
+   Deep navy + electric blue/cyan/violet — premium fintech aesthetic
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Core backgrounds ─────────────────────────────────────────────────── */
+  --bg:           #050c18;
+  --bg-2:         #07111f;
+  --bg-3:         #091827;
+
+  /* ── Card surfaces — solid fills, not near-transparent ───────────────── */
+  --card:         #0c1e35;       /* primary card surface   */
+  --card-2:       #0f2440;       /* raised / hover state   */
+  --card-3:       #0a1a2e;       /* inset / input surface  */
+  --card-border:  rgba(78,155,255,0.14);
+  --card-border-2:rgba(255,255,255,0.07);
+
+  /* Keep old tokens for backward compat (some components use them) */
+  --surface:         rgba(12,30,53,0.90);
+  --surface-strong:  #0c1e35;
+  --surface-raised:  #0f2440;
+  --surface-muted:   #0a1828;
+  --surface-input:   #091828;
+
+  /* ── Ink (text) ───────────────────────────────────────────────────────── */
+  --ink:    #f0f6ff;
+  --ink-2:  #bdd0ef;
+  --ink-3:  #85a3c8;
+  --muted:  #5a7a9f;
+  --subtle: #374f6a;
+
+  /* ── Borders ──────────────────────────────────────────────────────────── */
+  --border:        rgba(78,155,255,0.14);
+  --border-soft:   rgba(255,255,255,0.06);
+  --border-accent: rgba(80,148,255,0.28);
+
+  /* ── Brand palette ────────────────────────────────────────────────────── */
+  --blue:       #4e9bff;
+  --blue-mid:   #3b87f5;
+  --blue-dark:  #1a5cbf;
+  --blue-dim:   rgba(78,155,255,0.15);
+  --blue-glow:  rgba(78,155,255,0.30);
+  --cyan:       #0de8ff;
+  --cyan-dim:   rgba(13,232,255,0.12);
+  --violet:     #9d78fb;
+  --violet-dim: rgba(157,120,251,0.14);
+  --indigo:     #6366f1;
+
+  /* ── Semantic states ──────────────────────────────────────────────────── */
+  --accent:       #6db4ff;
+  --accent-hover: #9aceff;
+  --focus:        #4e9bff;
+  --success:      #22d987;
+  --success-dim:  rgba(34,217,135,0.13);
+  --success-glow: rgba(34,217,135,0.22);
+  --danger:       #ff5b5b;
+  --danger-dim:   rgba(255,91,91,0.13);
+  --warning:      #ffb020;
+  --warning-dim:  rgba(255,176,32,0.11);
+
+  /* ── Gradients ────────────────────────────────────────────────────────── */
+  --grad-brand:  linear-gradient(135deg, #4e9bff 0%, #0de8ff 50%, #9d78fb 100%);
+  --grad-hero:   linear-gradient(145deg, #0d2248 0%, #091830 45%, #0c1a38 100%);
+
+  /* Action tile gradients — solid enough to read */
+  --grad-send:   linear-gradient(145deg, #1e0e0e 0%, #2a1010 100%);
+  --grad-recv:   linear-gradient(145deg, #0c1e14 0%, #0e2419 100%);
+  --grad-scan:   linear-gradient(145deg, #071e22 0%, #0a2428 100%);
+  --grad-req:    linear-gradient(145deg, #150e2a 0%, #1a1230 100%);
+  --grad-rcpts:  linear-gradient(145deg, #0c1832 0%, #0f1e3a 100%);
+  --grad-help:   linear-gradient(145deg, #1e1600 0%, #261c06 100%);
+
+  /* ── Layout heights ───────────────────────────────────────────────────── */
+  --nav-h:    60px;
+  --header-h: 56px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base reset & body
+   ═══════════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  scroll-behavior: smooth;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+}
+
+/* #root must fill the full viewport — no centering here */
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Content column: fills phone width, centers with max-width on larger screens */
+.app-col {
+  width: 100%;
+  max-width: 480px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Typography utilities
+   ═══════════════════════════════════════════════════════════════════════════ */
+.display {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  letter-spacing: -0.03em;
+}
+.mono {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  font-feature-settings: "tnum";
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Scrollbar
+   ═══════════════════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 2px; height: 2px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 99px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Focus ring
+   ═══════════════════════════════════════════════════════════════════════════ */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Input / textarea
+   ═══════════════════════════════════════════════════════════════════════════ */
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Brand glow utilities
+   ═══════════════════════════════════════════════════════════════════════════ */
+.qp-glow {
+  box-shadow:
+    0 0 0 1px rgba(78,155,255,0.18),
+    0 4px 28px rgba(78,155,255,0.12),
+    0 1px 4px rgba(0,0,0,0.60);
+}
+.qp-glow-success {
+  box-shadow:
+    0 0 0 1px rgba(34,217,135,0.22),
+    0 4px 24px rgba(34,217,135,0.14);
+}
+.qp-glow-danger {
+  box-shadow:
+    0 0 0 1px rgba(255,91,91,0.22),
+    0 4px 20px rgba(255,91,91,0.12);
+}
+.qp-glow-hero {
+  box-shadow:
+    0 0 0 1px rgba(78,155,255,0.24),
+    0 8px 48px rgba(78,155,255,0.18),
+    0 32px 64px rgba(0,0,0,0.65),
+    0 1px 0 rgba(255,255,255,0.07) inset;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Card — solid, visible surfaces
+   ═══════════════════════════════════════════════════════════════════════════ */
+.qp-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+}
+.qp-card-2 {
+  background: var(--card-2);
+  border: 1px solid var(--card-border-2);
+  border-radius: 16px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Primary button
+   ═══════════════════════════════════════════════════════════════════════════ */
+.qp-btn-primary {
+  background: linear-gradient(135deg, #4e9bff 0%, #3b87f5 100%);
+  color: #fff;
+  border-radius: 16px;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  padding: 16px 20px;
+  width: 100%;
+  transition: filter 0.15s, transform 0.10s;
+  letter-spacing: -0.01em;
+  box-shadow: 0 4px 16px rgba(78,155,255,0.30);
+}
+.qp-btn-primary:hover  { filter: brightness(1.12); }
+.qp-btn-primary:active { transform: scale(0.982); }
+.qp-btn-primary:disabled { opacity: 0.38; cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Safe-area + nav padding helpers
+   ═══════════════════════════════════════════════════════════════════════════ */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.pb-nav  { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 24px); }
+.pb-nav-extra { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 48px); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Shimmer skeleton
+   ═══════════════════════════════════════════════════════════════════════════ */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.04) 25%,
+    rgba(255,255,255,0.09) 50%,
+    rgba(255,255,255,0.04) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite;
+  border-radius: 10px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Pulse dot (live indicator)
+   ═══════════════════════════════════════════════════════════════════════════ */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1;   transform: scale(1);    }
+  50%       { opacity: 0.5; transform: scale(0.72); }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Transition helpers
+   ═══════════════════════════════════════════════════════════════════════════ */
+.transition-fast { transition: all 0.12s ease; }
+.transition-base { transition: all 0.20s ease; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   html5-qrcode overrides — hide library chrome, show video only
+   ═══════════════════════════════════════════════════════════════════════════ */
+#qp-qr-reader img[alt="Info icon"],
+#qp-qr-reader__header_message,
+#qp-qr-reader__status_span,
+#qp-qr-reader__camera_selection,
+#qp-qr-reader__filescan_input,
+#qp-qr-reader__dashboard_section_fileselection,
+#qp-qr-reader__dashboard_section_swaplink {
+  display: none !important;
+}
+#qp-qr-reader {
+  border: none !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+#qp-qr-reader video {
+  border-radius: 16px;
+  width: 100% !important;
+  max-height: 320px;
+  object-fit: cover;
+  display: block;
+}
+#qp-qr-reader__scan_region {
+  min-height: unset !important;
+  background: transparent !important;
+}
+#qp-qr-reader__scan_region canvas { border-radius: 16px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Screen header bar (used by ScreenLayout)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.screen-header {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 11px;
+  background: rgba(5,12,24,0.95);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-bottom: 1px solid rgba(78,155,255,0.10);
+  margin: 0 -16px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Input field base
+   ═══════════════════════════════════════════════════════════════════════════ */
+.qp-input {
+  width: 100%;
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--card-3);
+  border: 1px solid rgba(78,155,255,0.16);
+  color: var(--ink);
+  font-size: 0.9375rem;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.qp-input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(78,155,255,0.15);
+}
+.qp-input::placeholder { color: var(--subtle); opacity: 1; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Section label helper
+   ═══════════════════════════════════════════════════════════════════════════ */
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
