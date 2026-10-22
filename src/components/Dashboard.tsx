@@ -96,7 +96,7 @@ export function Dashboard({ onNavigate }: Props) {
     query: { enabled: !!address, refetchInterval: 20_000 },
   })
 
-  const { data: blockNumber, isError: rpcError } = useBlockNumber({
+  const { data: blockNumber } = useBlockNumber({
     chainId: ARC_MAINNET_CHAIN_ID,
     watch:   false,
     query:   { enabled: !!address },
@@ -283,10 +283,10 @@ export function Dashboard({ onNavigate }: Props) {
                 <div className="skeleton h-12 w-44 rounded-xl" />
                 <div className="skeleton h-4 w-24 rounded-lg" />
               </div>
-            ) : (balanceError || rpcError) ? (
+            ) : balanceError ? (
               <div>
                 <p className="display text-4xl font-bold" style={{ color: 'var(--danger)' }}>—</p>
-                <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>RPC unavailable</p>
+                <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>Balance unavailable — tap refresh</p>
               </div>
             ) : (
               <div>
