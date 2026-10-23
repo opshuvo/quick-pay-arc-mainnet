@@ -99,29 +99,31 @@ export function Dashboard({ onNavigate }: Props) {
 
   const fetchBalance = useCallback(async () => {
     if (!address) return
+    // Wait for the wallet client to resolve before attempting any read.
+    // On first render useConnectorClient returns undefined asynchronously;
+    // running before it resolves skips the wallet path and goes straight to
+    // the HTTP fallback, which can fail on some mobile networks.
+    if (walletClient === undefined) return
     setIsFetching(true)
     setBalanceLoading(rawBalance === undefined)
     setBalanceError(false)
     try {
-      // Primary: use the wallet client's own transport (wallet's RPC)
-      const client = walletClient ?? null
-      const result = client
-        ? await readContract(client, {
-            address:      USDC_ADDRESS,
-            abi:          erc20Abi,
-            functionName: 'balanceOf',
-            args:         [address],
-          })
-        : undefined
-      if (result !== undefined) {
-        setRawBalance(result)
-        setBalanceError(false)
-        return
-      }
+      // Primary: use the wallet client's own EIP-1193 transport (wallet's RPC).
+      // This uses whatever RPC MetaMask has configured for chain 5042 — different
+      // infrastructure from our HTTP transport, bypassing network-level blocks.
+      const result = await readContract(walletClient, {
+        address:      USDC_ADDRESS,
+        abi:          erc20Abi,
+        functionName: 'balanceOf',
+        args:         [address],
+      })
+      setRawBalance(result)
+      setBalanceError(false)
+      return
     } catch (walletErr) {
       console.warn('[QuickPay] wallet-client balanceOf failed, trying HTTP transport:', walletErr)
     }
-    // Fallback: use wagmi's public client (our HTTP fallback transport)
+    // Fallback: HTTP transport across all official Arc RPC endpoints.
     try {
       const { createPublicClient, http, fallback } = await import('viem')
       const { arc } = await import('viem/chains')
@@ -148,7 +150,9 @@ export function Dashboard({ onNavigate }: Props) {
 
   const refetch = fetchBalance
 
-  // Fetch on mount, on address change, and on wallet client change
+  // Fetch whenever address or walletClient changes (walletClient resolves async).
+  // walletClient starts as undefined and resolves on the next render cycle;
+  // the guard above ensures we only run once it is defined.
   useEffect(() => {
     void fetchBalance()
     const id = setInterval(() => { void fetchBalance() }, 20_000)
