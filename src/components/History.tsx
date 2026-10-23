@@ -22,7 +22,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useAccount, usePublicClient } from 'wagmi'
+import { useAccount, usePublicClient, useConnectorClient } from 'wagmi'
+import { createPublicClient, custom } from 'viem'
 import { keccak256, toBytes, decodeAbiParameters, parseAbiParameters } from 'viem'
 import {
   Loader2, Clock, RefreshCw, ChevronDown, ChevronUp,
@@ -128,7 +129,16 @@ interface Props { onBack: () => void }
 
 export function History({ onBack }: Props) {
   const { address, isConnected } = useAccount()
-  const client = usePublicClient({ chainId: ARC_MAINNET_CHAIN_ID })
+  // Use the wallet's EIP-1193 provider for RPC calls (getLogs, getBlockNumber).
+  // This routes through MetaMask's own transport instead of our HTTP fallback,
+  // which can be unreachable on some mobile networks.
+  const { data: walletClient } = useConnectorClient({ chainId: ARC_MAINNET_CHAIN_ID })
+  const httpClient = usePublicClient({ chainId: ARC_MAINNET_CHAIN_ID })
+  // If the wallet client is available, wrap it as a public client so it exposes
+  // the same getLogs / getBlockNumber / getTransactionReceipt API surface.
+  const client = walletClient
+    ? createPublicClient({ chain: walletClient.chain, transport: custom(walletClient.transport) })
+    : httpClient
 
   const [transfers,    setTransfers]    = useState<Transfer[]>([])
   const [filter,       setFilter]       = useState<FilterTab>('all')
@@ -278,6 +288,8 @@ export function History({ onBack }: Props) {
           setError('This block range contains too many transfers. The page size has been reduced — please refresh.')
         } else if (msg.includes('-32014') || msg.includes('not available')) {
           setError('Block data is temporarily unavailable on Arc. Please try again in a moment.')
+        } else if (msg.toLowerCase().includes('http request failed') || msg.toLowerCase().includes('failed to fetch')) {
+          setError('Cannot reach Arc Mainnet RPC. Check that your wallet\'s Arc network is configured correctly, or try a different network connection.')
         } else {
           setError(msg || 'Failed to load history. Please try again.')
         }
@@ -348,11 +360,16 @@ export function History({ onBack }: Props) {
       return
     }
 
-    // New address — reload
+    // Wait for walletClient to resolve before loading — same pattern as Dashboard.
+    // walletClient starts undefined and resolves async; the client derived from it
+    // is used for all RPC calls, so we must wait until it is available.
+    if (!walletClient) return
+
+    // New address or walletClient just resolved — reload
     if (loadedForRef.current !== address) {
       void loadInitial(address)
     }
-  }, [isConnected, address, loadInitial])
+  }, [isConnected, address, walletClient, loadInitial]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Filtered list ───────────────────────────────────────────────────────────
 
