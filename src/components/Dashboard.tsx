@@ -4,9 +4,10 @@
  * Visual-only changes in this file.
  */
 
-import { useState, useEffect } from 'react'
-import { useAccount, useReadContract, useBlockNumber } from 'wagmi'
+import { useState, useEffect, useCallback } from 'react'
+import { useAccount, useBlockNumber, useConnectorClient } from 'wagmi'
 import { erc20Abi } from 'viem'
+import { readContract } from 'viem/actions'
 import {
   Eye, EyeOff, RefreshCw,
   ArrowUpRight, QrCode, ScanLine, FileText,
@@ -84,29 +85,75 @@ export function Dashboard({ onNavigate }: Props) {
     setRecentReceipts(mine)
   }, [address])
 
-  const {
-    data: rawBalance, isLoading: balanceLoading,
-    isError: balanceError, error: balanceErr, refetch, isFetching,
-  } = useReadContract({
-    address:      USDC_ADDRESS,
-    abi:          erc20Abi,
-    functionName: 'balanceOf',
-    args:         address ? [address] : undefined,
-    chainId:      ARC_MAINNET_CHAIN_ID,
-    query: { enabled: !!address, refetchInterval: 20_000 },
-  })
+  // ── Balance read: wallet-provider first, HTTP transport fallback ────────────
+  // Arc's USDC precompile (0x3600…) responds correctly to eth_call.
+  // However, wagmi's public client uses our configured HTTP transport
+  // (fallback across 4 Arc RPC URLs), which can fail on some mobile networks.
+  // Using the wallet's own EIP-1193 provider bypasses our HTTP transport
+  // and uses whatever RPC the wallet (MetaMask) has configured for chain 5042.
+  const { data: walletClient } = useConnectorClient({ chainId: ARC_MAINNET_CHAIN_ID })
+  const [rawBalance,    setRawBalance]    = useState<bigint | undefined>(undefined)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+  const [balanceError,  setBalanceError]  = useState(false)
+  const [isFetching,    setIsFetching]    = useState(false)
 
-  // Temporary diagnostic: log full error to console on every balance failure
-  if (balanceErr) {
-    const e = balanceErr as Error & { cause?: unknown }
-    console.error('[QuickPay] balanceOf error:', {
-      name:    e.name,
-      message: e.message,
-      cause:   e.cause,
-      stack:   e.stack?.slice(0, 300),
-      full:    String(e),
-    })
-  }
+  const fetchBalance = useCallback(async () => {
+    if (!address) return
+    setIsFetching(true)
+    setBalanceLoading(rawBalance === undefined)
+    setBalanceError(false)
+    try {
+      // Primary: use the wallet client's own transport (wallet's RPC)
+      const client = walletClient ?? null
+      const result = client
+        ? await readContract(client, {
+            address:      USDC_ADDRESS,
+            abi:          erc20Abi,
+            functionName: 'balanceOf',
+            args:         [address],
+          })
+        : undefined
+      if (result !== undefined) {
+        setRawBalance(result)
+        setBalanceError(false)
+        return
+      }
+    } catch (walletErr) {
+      console.warn('[QuickPay] wallet-client balanceOf failed, trying HTTP transport:', walletErr)
+    }
+    // Fallback: use wagmi's public client (our HTTP fallback transport)
+    try {
+      const { createPublicClient, http, fallback } = await import('viem')
+      const { arc } = await import('viem/chains')
+      const publicClient = createPublicClient({
+        chain: arc,
+        transport: fallback(arc.rpcUrls.default.http.map(url => http(url))),
+      })
+      const result = await readContract(publicClient, {
+        address:      USDC_ADDRESS,
+        abi:          erc20Abi,
+        functionName: 'balanceOf',
+        args:         [address],
+      })
+      setRawBalance(result)
+      setBalanceError(false)
+    } catch (httpErr) {
+      console.error('[QuickPay] balanceOf HTTP fallback also failed:', httpErr)
+      setBalanceError(true)
+    } finally {
+      setIsFetching(false)
+      setBalanceLoading(false)
+    }
+  }, [address, walletClient, rawBalance])
+
+  const refetch = fetchBalance
+
+  // Fetch on mount, on address change, and on wallet client change
+  useEffect(() => {
+    void fetchBalance()
+    const id = setInterval(() => { void fetchBalance() }, 20_000)
+    return () => clearInterval(id)
+  }, [address, walletClient]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: blockNumber } = useBlockNumber({
     chainId: ARC_MAINNET_CHAIN_ID,
@@ -299,22 +346,6 @@ export function Dashboard({ onNavigate }: Props) {
               <div>
                 <p className="display text-4xl font-bold" style={{ color: 'var(--danger)' }}>—</p>
                 <p className="text-xs mt-1 font-semibold" style={{ color: 'var(--danger)' }}>Balance unavailable — tap refresh</p>
-                {balanceErr && (() => {
-                  const e = balanceErr as Error & { cause?: { message?: string; shortMessage?: string } }
-                  const cause = e.cause?.shortMessage ?? e.cause?.message ?? ''
-                  return (
-                    <div className="mt-2 space-y-0.5">
-                      <p className="mono text-[10px] break-all" style={{ color: 'rgba(255,130,130,0.85)' }}>
-                        {e.name}: {e.message?.slice(0, 160)}
-                      </p>
-                      {cause && (
-                        <p className="mono text-[10px] break-all" style={{ color: 'rgba(255,130,130,0.7)' }}>
-                          cause: {cause.slice(0, 120)}
-                        </p>
-                      )}
-                    </div>
-                  )
-                })()}
               </div>
             ) : (
               <div>
