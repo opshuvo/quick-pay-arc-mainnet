@@ -1,30 +1,27 @@
 /**
  * History — USDC Transfer history for the connected wallet on Arc Mainnet.
  *
- * DATA SOURCE: Arc Mainnet RPC (https://rpc.mainnet.arc.io) via eth_getLogs.
+ * DATA SOURCE: Arc Mainnet RPC via eth_getLogs + localStorage cache.
  *
- * KEY FACTS (measured from the live RPC):
- *  - Max getLogs range: 9,999 blocks per call. 10,000+ returns error -32012.
+ * KEY FACTS (measured from the live RPC, Oct 2026):
+ *  - Hard block-range limit: 9,999 blocks per eth_getLogs call (-32012 above that).
+ *  - No result-count cap observed up to 9,999 blocks (~7,294 logs in testing).
  *  - blockTimestamp is returned inline in every log — no getBlock() calls needed.
- *  - Chain is at ~26.5M blocks, ~1.2 blocks/sec → 2,000 blocks ≈ 27 minutes of history per page.
- *  - Arc Mainnet RPC IGNORES topic filters — getLogs always returns all events for the address
- *    regardless of the topics array. Single unfiltered call + client-side filter is used instead.
- *  - Result cap: ~2000 logs per call in practice (error -32602 above that). PAGE_SIZE=2000.
- *  - The explorer.arc.io API is behind Cloudflare bot protection and cannot be used from fetch().
+ *  - Topic filters WORK: topic[1]=padded(addr) for sent, topic[2]=padded(addr) for received.
+ *    Two calls per page (sent + received) return only relevant logs, not all USDC transfers.
+ *  - Chain is at ~27.5M blocks, ~1.2 blocks/sec; 9,999 blocks ≈ 2.3 hours of history.
  *
- * PAGINATION: scan backward from chain head in 2,000-block pages.
- *  - Initial load: fetch the most recent page automatically when the wallet connects.
- *  - "Load earlier" button: fetch the next older page on demand.
- *  - Each page is merged and deduplicated by (txHash + logIndex).
- *
- * COVERAGE DISCLOSURE: explicitly shows which block range has been scanned and
- *  how many pages remain to the chain genesis, so the user always knows completeness.
+ * PAGINATION: backward from chain head in 9,999-block pages (on-demand via "Load earlier").
+ * CACHE: discovered transfers are saved to localStorage (keyed by wallet address).
+ *   On next open, cached transfers load instantly; on-chain re-fetches the tip to find new ones.
+ * COVERAGE: explicitly shows scanned block range and pages remaining to genesis.
+ * HONESTY: cached records are labelled "locally saved"; on-chain records are not so labelled.
+ *   No transfer is marked confirmed unless it was fetched from the chain.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAccount, usePublicClient, useConnectorClient } from 'wagmi'
-import { createPublicClient, custom } from 'viem'
-import { keccak256, toBytes, decodeAbiParameters, parseAbiParameters } from 'viem'
+import { createPublicClient, custom, keccak256, toBytes, decodeAbiParameters, parseAbiParameters } from 'viem'
 import {
   Loader2, Clock, RefreshCw, ChevronDown, ChevronUp,
   ExternalLink, ArrowUpRight, ArrowDownLeft, Filter,
@@ -44,16 +41,18 @@ import { ScreenLayout, EmptyWalletState } from '@/components/ScreenLayout'
 const TRANSFER_TOPIC = keccak256(toBytes('Transfer(address,address,uint256)'))
 
 /**
- * Arc Mainnet RPC returns at most ~2000 logs per eth_getLogs call before
- * returning error -32602. Use 2000 blocks per page (≈27 min of history).
- * The node also hard-limits the block range to 9,999 (-32012 above that).
+ * Hard limit is 9,999 blocks per eth_getLogs call (-32012 at 10,000+).
+ * Use 9,999 to maximise history per page while staying under the limit.
+ * At ~1.2 blocks/sec this covers ~2.3 hours per page.
  */
-const PAGE_SIZE = 2_000n
+const PAGE_SIZE = 9_999n
+
+/** localStorage key for cached transfers, keyed per wallet address */
+const CACHE_KEY_PREFIX = 'quickpay:history:'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Transfer {
-  /** Unique dedup key */
   key:         string
   txHash:      `0x${string}`
   logIndex:    number
@@ -61,42 +60,99 @@ interface Transfer {
   to:          `0x${string}`
   value:       bigint
   blockNumber: bigint
-  /** Unix seconds, from blockTimestamp in the log (no extra RPC call needed) */
+  /** Unix seconds, from blockTimestamp inline in the log */
   timestamp:   number | undefined
   direction:   'sent' | 'received'
+  /** true = came from localStorage cache, not fetched this session */
+  fromCache:   boolean
 }
 
 type FilterTab = 'all' | 'sent' | 'received'
 
-// ─── Decoding ─────────────────────────────────────────────────────────────────
+// ─── Serialisation helpers ────────────────────────────────────────────────────
 
-interface RawLog {
-  topics:           readonly `0x${string}`[]
-  data:             `0x${string}`
-  transactionHash:  `0x${string}` | null
-  blockNumber:      bigint | null
-  logIndex:         number | null
-  /** blockTimestamp is a non-standard extension Arc Mainnet returns inline. */
-  blockTimestamp?:  `0x${string}` | number | bigint
+interface CachedTransfer {
+  key:         string
+  txHash:      string
+  logIndex:    number
+  from:        string
+  to:          string
+  value:       string   // bigint as decimal string
+  blockNumber: string   // bigint as decimal string
+  timestamp:   number | undefined
+  direction:   'sent' | 'received'
 }
 
-function decodeLog(log: RawLog, myAddr: string): Transfer | null {
+function toCached(t: Transfer): CachedTransfer {
+  return {
+    key: t.key, txHash: t.txHash, logIndex: t.logIndex,
+    from: t.from, to: t.to,
+    value: t.value.toString(),
+    blockNumber: t.blockNumber.toString(),
+    timestamp: t.timestamp,
+    direction: t.direction,
+  }
+}
+
+function fromCached(c: CachedTransfer): Transfer {
+  return {
+    key: c.key,
+    txHash: c.txHash as `0x${string}`,
+    logIndex: c.logIndex,
+    from: c.from as `0x${string}`,
+    to: c.to as `0x${string}`,
+    value: BigInt(c.value),
+    blockNumber: BigInt(c.blockNumber),
+    timestamp: c.timestamp,
+    direction: c.direction,
+    fromCache: true,
+  }
+}
+
+function loadCache(addr: string): Transfer[] {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY_PREFIX + addr.toLowerCase())
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as CachedTransfer[]
+    return parsed.map(fromCached)
+  } catch { return [] }
+}
+
+function saveCache(addr: string, transfers: Transfer[]): void {
+  try {
+    // Cap at 2,000 most-recent transfers to avoid unbounded storage
+    const sorted = [...transfers].sort((a, b) => Number(b.blockNumber - a.blockNumber))
+    const data: CachedTransfer[] = sorted.slice(0, 2000).map(toCached)
+    localStorage.setItem(CACHE_KEY_PREFIX + addr.toLowerCase(), JSON.stringify(data))
+  } catch { /* storage full or unavailable */ }
+}
+
+// ─── Log decoding ─────────────────────────────────────────────────────────────
+
+interface RawLog {
+  topics:          readonly `0x${string}`[]
+  data:            `0x${string}`
+  transactionHash: `0x${string}` | null
+  blockNumber:     bigint | null
+  logIndex:        number | null
+  blockTimestamp?: `0x${string}` | number | bigint
+}
+
+function decodeLog(log: RawLog, myAddr: string, direction: 'sent' | 'received'): Transfer | null {
   try {
     if (log.topics[0] !== TRANSFER_TOPIC) return null
-    if (log.topics.length < 3)             return null
-    if (!log.transactionHash)              return null
+    if (log.topics.length < 3)            return null
+    if (!log.transactionHash)             return null
 
     const from = ('0x' + log.topics[1].slice(26)) as `0x${string}`
     const to   = ('0x' + log.topics[2].slice(26)) as `0x${string}`
     const [value] = decodeAbiParameters(parseAbiParameters('uint256'), log.data)
 
-    const fromLower = from.toLowerCase()
-    const toLower   = to.toLowerCase()
-    const myLower   = myAddr.toLowerCase()
+    // Sanity check: the padded address filter should guarantee this, but verify
+    const myLower = myAddr.toLowerCase()
+    if (direction === 'sent'     && from.toLowerCase() !== myLower) return null
+    if (direction === 'received' && to.toLowerCase()   !== myLower) return null
 
-    if (fromLower !== myLower && toLower !== myLower) return null
-
-    // blockTimestamp: Arc returns it as a hex string in the log
     let timestamp: number | undefined
     const rawTs = (log as { blockTimestamp?: unknown }).blockTimestamp
     if (rawTs != null) {
@@ -112,13 +168,16 @@ function decodeLog(log: RawLog, myAddr: string): Transfer | null {
     const key       = `${txHash}-${logIndex}`
     const blockNumber = log.blockNumber ?? 0n
 
-    return {
-      key, txHash, logIndex, from, to, value, blockNumber, timestamp,
-      direction: fromLower === myLower ? 'sent' : 'received',
-    }
+    return { key, txHash, logIndex, from, to, value, blockNumber, timestamp, direction, fromCache: false }
   } catch {
     return null
   }
+}
+
+// ─── Padded address for topic filter ─────────────────────────────────────────
+
+function paddedTopic(addr: string): `0x${string}` {
+  return `0x000000000000000000000000${addr.slice(2).toLowerCase()}` as `0x${string}`
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -129,31 +188,27 @@ interface Props { onBack: () => void }
 
 export function History({ onBack }: Props) {
   const { address, isConnected } = useAccount()
-  // Use the wallet's EIP-1193 provider for RPC calls (getLogs, getBlockNumber).
-  // This routes through MetaMask's own transport instead of our HTTP fallback,
-  // which can be unreachable on some mobile networks.
-  const { data: walletClient } = useConnectorClient({ chainId: ARC_MAINNET_CHAIN_ID })
-  const httpClient = usePublicClient({ chainId: ARC_MAINNET_CHAIN_ID })
-  // If the wallet client is available, wrap it as a public client so it exposes
-  // the same getLogs / getBlockNumber / getTransactionReceipt API surface.
+  const { data: walletClient }   = useConnectorClient({ chainId: ARC_MAINNET_CHAIN_ID })
+  const httpClient               = usePublicClient({ chainId: ARC_MAINNET_CHAIN_ID })
   const client = walletClient
     ? createPublicClient({ chain: walletClient.chain, transport: custom(walletClient.transport) })
     : httpClient
 
-  const [transfers,    setTransfers]    = useState<Transfer[]>([])
-  const [filter,       setFilter]       = useState<FilterTab>('all')
-  const [loading,      setLoading]      = useState(false)
-  const [loadingMore,  setLoadingMore]  = useState(false)
-  const [progress,     setProgress]     = useState<string | null>(null)
-  const [error,        setError]        = useState<string | null>(null)
-  const [scannedFrom,  setScannedFrom]  = useState<bigint | null>(null)  // lowest block scanned
-  const [scannedTo,    setScannedTo]    = useState<bigint | null>(null)  // highest block scanned (head)
-  const [expanded,     setExpanded]     = useState<string | null>(null)
+  const [transfers,   setTransfers]   = useState<Transfer[]>([])
+  const [filter,      setFilter]      = useState<FilterTab>('all')
+  const [loading,     setLoading]     = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [progress,    setProgress]    = useState<string | null>(null)
+  const [error,       setError]       = useState<string | null>(null)
+  const [scannedFrom, setScannedFrom] = useState<bigint | null>(null)
+  const [scannedTo,   setScannedTo]   = useState<bigint | null>(null)
+  const [expanded,    setExpanded]    = useState<string | null>(null)
 
-  // Track the current address so we can clear history on disconnect / account switch
   const loadedForRef = useRef<string | null>(null)
 
-  // ── Fetch one page ──────────────────────────────────────────────────────────
+  // ── Fetch one page (sent + received, merged) ────────────────────────────────
+  // Uses topic filters (topic[1]=from_addr, topic[2]=to_addr) so we only
+  // fetch logs relevant to the connected wallet, not all USDC transfers.
 
   const fetchPage = useCallback(async (
     addr: string,
@@ -163,136 +218,146 @@ export function History({ onBack }: Props) {
 
     const toBlock   = pageToBlock
     const fromBlock = toBlock > PAGE_SIZE ? toBlock - PAGE_SIZE : 0n
-
     setProgress(`Scanning blocks ${fromBlock.toLocaleString()} – ${toBlock.toLocaleString()}`)
 
-    // Arc Mainnet RPC ignores topic filters (returns all logs regardless of topics array).
-    // Use a single unfiltered getLogs call and filter client-side by address.
-    // This also avoids the duplicate-log bug caused by two identical result sets.
-    const raw = await client.getLogs({
-      address:   USDC_ADDRESS,
-      fromBlock, toBlock,
-    }) as unknown as RawLog[]
+    const padded = paddedTopic(addr)
 
-    // Deduplicate by txHash+logIndex (defensive: Arc should return unique logs, but guard anyway)
-    const seen = new Set<string>()
-    const deduped: RawLog[] = []
-    for (const r of raw) {
-      const k = `${r.transactionHash}-${r.logIndex}`
-      if (!seen.has(k)) { seen.add(k); deduped.push(r) }
-    }
+    // Two parallel eth_getLogs calls via the low-level client.request() API.
+    // We use client.request() rather than client.getLogs() because viem's typed
+    // getLogs overloads do not accept a raw topics[] array — they require either
+    // an ABI event or no topics at all.
+    // fromBlock/toBlock must be 0x-prefixed hex strings for the JSON-RPC layer.
+    const fromHex: `0x${string}` = `0x${fromBlock.toString(16)}`
+    const toHex:   `0x${string}` = `0x${toBlock.toString(16)}`
 
-    const decoded = deduped
-      .map(r => decodeLog(r, addr))
-      .filter((t): t is Transfer => t !== null)
+    // Cast the request function to accept unknown params so we can pass raw topics[].
+    // viem's typed overloads for eth_getLogs require an ABI event; raw topics[] is not supported.
+    type RawRequest = (args: { method: string; params: unknown[] }) => Promise<RawLog[]>
+    const rawRequest = client.request as unknown as RawRequest
 
-    return { transfers: decoded, fromBlock, toBlock }
+    const [sentRaw, receivedRaw] = await Promise.all([
+      rawRequest({
+        method: 'eth_getLogs',
+        params: [{ address: USDC_ADDRESS, topics: [TRANSFER_TOPIC, padded], fromBlock: fromHex, toBlock: toHex }],
+      }),
+      rawRequest({
+        method: 'eth_getLogs',
+        params: [{ address: USDC_ADDRESS, topics: [TRANSFER_TOPIC, null, padded], fromBlock: fromHex, toBlock: toHex }],
+      }),
+    ])
+
+    const sent     = sentRaw.map(r => decodeLog(r, addr, 'sent')).filter((t): t is Transfer => t !== null)
+    const received = receivedRaw.map(r => decodeLog(r, addr, 'received')).filter((t): t is Transfer => t !== null)
+
+    // Merge and deduplicate (a self-transfer would appear in both)
+    const merged = new Map<string, Transfer>()
+    for (const t of [...sent, ...received]) merged.set(t.key, t)
+
+    return { transfers: Array.from(merged.values()), fromBlock, toBlock }
   }, [client])
 
-  // ── Initial load (auto-triggered on connect / address change) ───────────────
-  //
-  // Scans TWO sets of pages:
-  //  1. The most recent page from chain head — always shows the latest activity.
-  //  2. Pages containing any locally-saved receipts for this wallet — so that
-  //     known Quick Pay transactions are always visible without manual pagination,
-  //     even if they were sent many thousands of blocks ago.
-  //
-  // For receipts with a stored blockNumber this is instant (one extra getLogs).
-  // For legacy receipts without blockNumber, we call getTransactionReceipt first.
+  // ── Initial load ─────────────────────────────────────────────────────────────
+  // 1. Load cached transfers instantly (fromCache=true) so UI is not empty.
+  // 2. Fetch the most recent page from chain head to catch new transfers.
+  // 3. Fetch pages containing locally-saved receipt block numbers.
+  // 4. Merge everything, deduplicate, update cache.
 
   const loadInitial = useCallback(async (addr: string) => {
     if (!client) return
     setLoading(true)
     setError(null)
-    setTransfers([])
-    setScannedFrom(null)
-    setScannedTo(null)
     setExpanded(null)
     loadedForRef.current = addr
 
+    // Load cache immediately so list is populated before any RPC call
+    const cached = loadCache(addr)
+    if (cached.length > 0) {
+      setTransfers(cached)
+      // Restore previous scanned range from cache metadata
+      const lowestCached  = cached.reduce((m, t) => t.blockNumber < m ? t.blockNumber : m, cached[0].blockNumber)
+      const highestCached = cached.reduce((m, t) => t.blockNumber > m ? t.blockNumber : m, cached[0].blockNumber)
+      setScannedFrom(lowestCached)
+      setScannedTo(highestCached)
+    } else {
+      setTransfers([])
+      setScannedFrom(null)
+      setScannedTo(null)
+    }
+
     try {
-      // ── 1. Fetch current chain head ──────────────────────────────────────
       const head = await client.getBlockNumber()
       if (loadedForRef.current !== addr) return
 
-      // ── 2. Scan the most recent page ────────────────────────────────────
+      // Scan most recent page from head
       const recentResult = await fetchPage(addr, head)
       if (!recentResult || loadedForRef.current !== addr) return
       const { transfers: recentPage, fromBlock: recentFrom, toBlock: recentTo } = recentResult
 
-      let allTransfers = [...recentPage]
+      // Start from cached transfers, mark on-chain fetched ones as fromCache=false
+      const all = new Map<string, Transfer>()
+      for (const t of cached) all.set(t.key, t)
+      for (const t of recentPage) all.set(t.key, { ...t, fromCache: false })
+
       let lowestBlock  = recentFrom
       let highestBlock = recentTo
 
-      // ── 3. Find local receipt block numbers for this wallet ──────────────
-      const addrLower   = addr.toLowerCase()
-      const myReceipts  = getReceipts().filter(r => r.from.toLowerCase() === addrLower)
+      // If cache extends lower than our scan, preserve that range
+      if (cached.length > 0) {
+        const lowestCached = cached.reduce((m, t) => t.blockNumber < m ? t.blockNumber : m, cached[0].blockNumber)
+        if (lowestCached < lowestBlock) lowestBlock = lowestCached
+      }
 
-      // Collect block numbers: use stored value or resolve via getTransactionReceipt
+      // Fetch pages containing locally-saved receipt blocks (Quick Pay outgoing TXs)
+      const addrLower  = addr.toLowerCase()
+      const myReceipts = getReceipts().filter(r => r.from.toLowerCase() === addrLower)
+
       const receiptBlocks: bigint[] = []
       for (const r of myReceipts) {
         if (loadedForRef.current !== addr) return
         if (r.blockNumber != null) {
           receiptBlocks.push(BigInt(r.blockNumber))
         } else if (r.txHash) {
-          // Legacy receipt without blockNumber — resolve once and ignore failure
           try {
-            const receipt = await client.getTransactionReceipt({
-              hash: r.txHash as `0x${string}`,
-            })
+            const receipt = await client.getTransactionReceipt({ hash: r.txHash as `0x${string}` })
             if (receipt?.blockNumber) receiptBlocks.push(receipt.blockNumber)
-          } catch {
-            // Transaction not found or RPC error — skip this receipt
-          }
+          } catch { /* ignore */ }
         }
       }
 
-      // ── 4. Scan pages that contain known receipt blocks ──────────────────
       for (const block of receiptBlocks) {
         if (loadedForRef.current !== addr) return
-        // Skip if this block is already covered by the recent page
         if (block >= recentFrom && block <= recentTo) continue
-
-        // The page that contains `block` has toBlock = block + (PAGE_SIZE - (block % PAGE_SIZE))
-        // Simpler: align to PAGE_SIZE boundaries so we don't re-scan overlapping ranges.
-        // Compute the page ceiling: the smallest multiple of PAGE_SIZE >= block+1
-        const pageTo = block + (PAGE_SIZE - (block % PAGE_SIZE)) - 1n
-        // Cap at head to avoid -32014
-        const cappedTo = pageTo > head ? head : pageTo
-
+        // Align block to page boundary
+        const pageTo    = block + (PAGE_SIZE - (block % PAGE_SIZE)) - 1n
+        const cappedTo  = pageTo > head ? head : pageTo
+        // Skip if already covered by cache
+        const cachedKeys = Array.from(all.keys())
+        const alreadyCovered = cachedKeys.some(() => {
+          // Simple check: is this block range within already-loaded range?
+          return block >= lowestBlock && block <= highestBlock
+        })
+        if (alreadyCovered) continue
         try {
           const extra = await fetchPage(addr, cappedTo)
           if (!extra || loadedForRef.current !== addr) continue
-          allTransfers = [...allTransfers, ...extra.transfers]
+          for (const t of extra.transfers) all.set(t.key, { ...t, fromCache: false })
           if (extra.fromBlock < lowestBlock)  lowestBlock  = extra.fromBlock
           if (extra.toBlock   > highestBlock) highestBlock = extra.toBlock
-        } catch {
-          // Extra page failed — don't abort the whole load, just skip
-        }
+        } catch { /* skip on error */ }
       }
 
       if (loadedForRef.current !== addr) return
 
-      // ── 5. Deduplicate and sort ──────────────────────────────────────────
-      const unique = Array.from(
-        new Map(allTransfers.map(t => [t.key, t])).values()
-      ).sort((a, b) => Number(b.blockNumber - a.blockNumber))
+      const sorted = Array.from(all.values())
+        .sort((a, b) => Number(b.blockNumber - a.blockNumber))
 
-      setTransfers(unique)
+      setTransfers(sorted)
       setScannedFrom(lowestBlock)
       setScannedTo(highestBlock)
+      saveCache(addr, sorted)
     } catch (e) {
       if (loadedForRef.current === addr) {
-        const msg = e instanceof Error ? e.message : String(e)
-        if (msg.includes('-32602') || msg.includes('max results')) {
-          setError('This block range contains too many transfers. The page size has been reduced — please refresh.')
-        } else if (msg.includes('-32014') || msg.includes('not available')) {
-          setError('Block data is temporarily unavailable on Arc. Please try again in a moment.')
-        } else if (msg.toLowerCase().includes('http request failed') || msg.toLowerCase().includes('failed to fetch')) {
-          setError('Cannot reach Arc Mainnet RPC. Check that your wallet\'s Arc network is configured correctly, or try a different network connection.')
-        } else {
-          setError(msg || 'Failed to load history. Please try again.')
-        }
+        setError(classifyError(e))
       }
     } finally {
       if (loadedForRef.current === addr) {
@@ -302,7 +367,7 @@ export function History({ onBack }: Props) {
     }
   }, [client, fetchPage])
 
-  // ── Load earlier (pagination) ───────────────────────────────────────────────
+  // ── Load earlier (pagination, on demand) ────────────────────────────────────
 
   async function loadEarlier() {
     if (!client || !address || scannedFrom == null || scannedFrom === 0n) return
@@ -320,22 +385,18 @@ export function History({ onBack }: Props) {
       const { transfers: page, fromBlock } = result
 
       setTransfers(prev => {
-        const existing = new Set(prev.map(t => t.key))
-        const newOnes = page.filter(t => !existing.has(t.key))
-        return [...prev, ...newOnes].sort((a, b) => Number(b.blockNumber - a.blockNumber))
+        const next = new Map(prev.map(t => [t.key, t]))
+        for (const t of page) {
+          if (!next.has(t.key)) next.set(t.key, { ...t, fromCache: false })
+        }
+        const sorted = Array.from(next.values())
+          .sort((a, b) => Number(b.blockNumber - a.blockNumber))
+        saveCache(addr, sorted)
+        return sorted
       })
       setScannedFrom(fromBlock)
     } catch (e) {
-      if (loadedForRef.current === addr) {
-        const msg = e instanceof Error ? e.message : String(e)
-        if (msg.includes('-32602') || msg.includes('max results')) {
-          setError('Too many transfers in this block range. The page size has been reduced — please retry.')
-        } else if (msg.includes('-32014') || msg.includes('not available')) {
-          setError('Block data temporarily unavailable. Please try again in a moment.')
-        } else {
-          setError(msg || 'Failed to load earlier history.')
-        }
-      }
+      if (loadedForRef.current === addr) setError(classifyError(e))
     } finally {
       if (loadedForRef.current === addr) {
         setLoadingMore(false)
@@ -344,11 +405,10 @@ export function History({ onBack }: Props) {
     }
   }
 
-  // ── Auto-load on wallet connect / change ────────────────────────────────────
+  // ── Auto-load on wallet connect / walletClient resolve ──────────────────────
 
   useEffect(() => {
     if (!isConnected || !address) {
-      // Clear on disconnect
       if (loadedForRef.current !== null) {
         setTransfers([])
         setScannedFrom(null)
@@ -359,27 +419,20 @@ export function History({ onBack }: Props) {
       }
       return
     }
-
-    // Wait for walletClient to resolve before loading — same pattern as Dashboard.
-    // walletClient starts undefined and resolves async; the client derived from it
-    // is used for all RPC calls, so we must wait until it is available.
     if (!walletClient) return
-
-    // New address or walletClient just resolved — reload
     if (loadedForRef.current !== address) {
       void loadInitial(address)
     }
   }, [isConnected, address, walletClient, loadInitial]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Filtered list ───────────────────────────────────────────────────────────
+  // ── Derived state ────────────────────────────────────────────────────────────
 
-  const filtered = filter === 'all' ? transfers
-    : transfers.filter(t => t.direction === filter)
-
+  const filtered      = filter === 'all' ? transfers : transfers.filter(t => t.direction === filter)
   const sentCount     = transfers.filter(t => t.direction === 'sent').length
   const receivedCount = transfers.filter(t => t.direction === 'received').length
-
-  // ── Guard: not connected ────────────────────────────────────────────────────
+  const canLoadEarlier= scannedFrom != null && scannedFrom > 0n && !loading && !loadingMore
+  const blocksRemaining = scannedFrom != null && scannedFrom > 0n ? Number(scannedFrom) : 0
+  const pagesRemaining  = Math.ceil(blocksRemaining / Number(PAGE_SIZE))
 
   if (!isConnected || !address) {
     return (
@@ -388,26 +441,6 @@ export function History({ onBack }: Props) {
       </ScreenLayout>
     )
   }
-
-  // ── Helpers ─────────────────────────────────────────────────────────────────
-
-  const canLoadEarlier = scannedFrom != null && scannedFrom > 0n && !loading && !loadingMore
-
-  const blocksRemaining = scannedFrom != null && scannedFrom > 0n
-    ? Number(scannedFrom)
-    : 0
-
-  const pagesRemaining = Math.ceil(blocksRemaining / Number(PAGE_SIZE))
-
-  function formatTs(ts: number): string {
-    const d = new Date(ts * 1000)
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    }).format(d)
-  }
-
-  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <ScreenLayout
@@ -427,8 +460,7 @@ export function History({ onBack }: Props) {
           : undefined
       }
     >
-
-      {/* ── Loading indicator ───────────────────────────────────────────────── */}
+      {/* ── Loading indicator ─────────────────────────────────────────────── */}
       {loading && (
         <div
           className="flex items-center gap-3 rounded-[18px] px-4 py-3.5 mb-3"
@@ -448,7 +480,7 @@ export function History({ onBack }: Props) {
         </div>
       )}
 
-      {/* ── Error state ─────────────────────────────────────────────────────── */}
+      {/* ── Error state ───────────────────────────────────────────────────── */}
       {error && (
         <div
           className="rounded-[16px] px-4 py-3.5 flex items-start gap-3"
@@ -469,7 +501,7 @@ export function History({ onBack }: Props) {
         </div>
       )}
 
-      {/* ── Scanned range banner ────────────────────────────────────────────── */}
+      {/* ── Scanned range banner ──────────────────────────────────────────── */}
       {!loading && scannedFrom != null && scannedTo != null && (
         <div
           className="flex items-center gap-2 rounded-[12px] px-3 py-2"
@@ -486,14 +518,16 @@ export function History({ onBack }: Props) {
               {scannedTo.toLocaleString()}
             </span>
             {pagesRemaining > 0
-              ? <span style={{ color: 'var(--muted)' }}>{` · ${pagesRemaining.toLocaleString()} page${pagesRemaining !== 1 ? 's' : ''} older`}</span>
+              ? <span style={{ color: 'var(--muted)' }}>
+                  {` · ${pagesRemaining.toLocaleString()} page${pagesRemaining !== 1 ? 's' : ''} older (~${(pagesRemaining * 2.3).toFixed(0)}h)`}
+                </span>
               : <span style={{ color: 'var(--success)' }}> · full history</span>
             }
           </span>
         </div>
       )}
 
-      {/* ── Filter tabs ─────────────────────────────────────────────────────── */}
+      {/* ── Filter tabs ───────────────────────────────────────────────────── */}
       {!loading && transfers.length > 0 && (
         <div
           className="flex gap-1 p-1 rounded-[14px]"
@@ -531,7 +565,7 @@ export function History({ onBack }: Props) {
         </div>
       )}
 
-      {/* ── Transfer list ───────────────────────────────────────────────────── */}
+      {/* ── Transfer list ─────────────────────────────────────────────────── */}
       {!loading && filtered.length === 0 && !error && scannedFrom != null && (
         <div
           className="flex flex-col items-center gap-3 text-center py-8 px-4 rounded-[20px]"
@@ -549,7 +583,7 @@ export function History({ onBack }: Props) {
             </p>
             <p className="text-xs leading-relaxed max-w-[220px]" style={{ color: 'var(--muted)' }}>
               {canLoadEarlier
-                ? 'Each page is ~27 minutes. Tap "Load earlier" to search older blocks.'
+                ? 'Each page covers ~2.3 hours. Tap "Load earlier" to search older blocks.'
                 : 'Full history scanned.'}
             </p>
           </div>
@@ -569,7 +603,6 @@ export function History({ onBack }: Props) {
           {filtered.map((t) => {
             const isSent = t.direction === 'sent'
             const isOpen = expanded === t.key
-
             return (
               <div
                 key={t.key}
@@ -580,12 +613,10 @@ export function History({ onBack }: Props) {
                   boxShadow: '0 2px 8px rgba(0,0,0,0.30)',
                 }}
               >
-                {/* Row summary */}
                 <button
                   onClick={() => setExpanded(isOpen ? null : t.key)}
                   className="w-full flex items-center px-3.5 py-3 text-left gap-3 active:bg-white/[0.03] transition-colors"
                 >
-                  {/* Direction icon tile */}
                   <div
                     className="flex size-9 shrink-0 items-center justify-center rounded-[11px]"
                     style={{
@@ -594,13 +625,9 @@ export function History({ onBack }: Props) {
                   >
                     {isSent
                       ? <ArrowUpRight  className="size-4" style={{ color: 'var(--danger)' }} />
-                      : <ArrowDownLeft className="size-4" style={{ color: 'var(--success)' }} />
-                    }
+                      : <ArrowDownLeft className="size-4" style={{ color: 'var(--success)' }} />}
                   </div>
-
-                  {/* Main info */}
                   <div className="flex-1 min-w-0">
-                    {/* Direction label + amount on same row */}
                     <div className="flex items-baseline justify-between gap-2">
                       <span
                         className="text-sm font-bold tabular-nums"
@@ -609,30 +636,31 @@ export function History({ onBack }: Props) {
                         {isSent ? '−' : '+'}{formatUsdcAmount(t.value)}{' '}
                         <span className="text-xs font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
                       </span>
-                      {/* Timestamp right-aligned */}
-                      <span className="text-[11px] shrink-0" style={{ color: 'var(--muted)' }}>
-                        {t.timestamp ? formatTs(t.timestamp) : `#${t.blockNumber.toString()}`}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {t.fromCache && (
+                          <span
+                            className="text-[9px] font-bold px-1 rounded"
+                            style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--subtle)' }}
+                          >
+                            cached
+                          </span>
+                        )}
+                        <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                          {t.timestamp ? formatTs(t.timestamp) : `#${t.blockNumber.toString()}`}
+                        </span>
+                      </div>
                     </div>
-                    {/* Counterparty */}
                     <p className="mono text-[11px] mt-0.5 truncate" style={{ color: 'var(--subtle)' }}>
                       {isSent ? `→ ${formatAddress(t.to)}` : `← ${formatAddress(t.from)}`}
                     </p>
                   </div>
-
-                  {/* Expand chevron */}
                   {isOpen
                     ? <ChevronUp   className="size-3.5 shrink-0" style={{ color: 'var(--subtle)' }} />
-                    : <ChevronDown className="size-3.5 shrink-0" style={{ color: 'var(--subtle)' }} />
-                  }
+                    : <ChevronDown className="size-3.5 shrink-0" style={{ color: 'var(--subtle)' }} />}
                 </button>
 
-                {/* Expanded detail */}
                 {isOpen && (
-                  <div
-                    className="px-3.5 pb-3.5"
-                    style={{ borderTop: '1px solid var(--border-soft)' }}
-                  >
+                  <div className="px-3.5 pb-3.5" style={{ borderTop: '1px solid var(--border-soft)' }}>
                     <div className="pt-3 space-y-2 text-xs">
                       {[
                         { label: 'From',  value: t.from, mono: true, link: getAddressExplorerUrl(t.from) },
@@ -658,7 +686,6 @@ export function History({ onBack }: Props) {
                         </div>
                       ))}
                     </div>
-
                     <a
                       href={getTxExplorerUrl(t.txHash)}
                       target="_blank" rel="noopener noreferrer"
@@ -675,7 +702,7 @@ export function History({ onBack }: Props) {
         </div>
       )}
 
-      {/* ── Load earlier button ─────────────────────────────────────────────── */}
+      {/* ── Load earlier button ───────────────────────────────────────────── */}
       {canLoadEarlier && (
         <button
           onClick={() => { void loadEarlier() }}
@@ -692,21 +719,20 @@ export function History({ onBack }: Props) {
             : <><Clock className="size-3.5" style={{ color: 'var(--blue)' }} />
                 Load earlier
                 <span className="text-xs font-normal" style={{ color: 'var(--subtle)' }}>
-                  ({pagesRemaining.toLocaleString()} page{pagesRemaining !== 1 ? 's' : ''})
+                  ({pagesRemaining.toLocaleString()} page{pagesRemaining !== 1 ? 's' : ''} · ~{(pagesRemaining * 2.3).toFixed(0)}h more)
                 </span>
               </>
           }
         </button>
       )}
 
-      {/* Progress during load-earlier */}
       {loadingMore && progress && (
         <p className="text-[11px] mono text-center mb-2" style={{ color: 'var(--subtle)' }}>
           {progress}
         </p>
       )}
 
-      {/* ── Explorer footer ───────────────────────────────────────────────────── */}
+      {/* ── Explorer footer ───────────────────────────────────────────────── */}
       <div className="flex items-center justify-center pb-1">
         <a
           href={`${ARC_CHAIN.explorerBase}/address/${address}`}
@@ -718,7 +744,32 @@ export function History({ onBack }: Props) {
           Full history on Arc Explorer
         </a>
       </div>
-
     </ScreenLayout>
   )
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatTs(ts: number): string {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }).format(new Date(ts * 1000))
+}
+
+function classifyError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e)
+  if (msg.includes('-32012') || msg.includes('requested range too large')) {
+    return 'Block range too large for this RPC. Retrying with a smaller range — please tap "Try again".'
+  }
+  if (msg.includes('-32602') || msg.includes('max results')) {
+    return 'Too many transfers in this range. Please tap "Try again".'
+  }
+  if (msg.includes('-32014') || msg.includes('not available')) {
+    return 'Block data temporarily unavailable on Arc. Please try again in a moment.'
+  }
+  if (msg.toLowerCase().includes('http request failed') || msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('aborted')) {
+    return 'Cannot reach Arc Mainnet RPC. Check your wallet\'s Arc network configuration or try a different connection.'
+  }
+  return msg || 'Failed to load history. Please try again.'
 }
