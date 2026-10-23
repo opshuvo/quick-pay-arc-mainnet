@@ -86,14 +86,14 @@ export function Dashboard({ onNavigate }: Props) {
 
   const {
     data: rawBalance, isLoading: balanceLoading,
-    isError: balanceError, error: balanceReadError, refetch, isFetching,
+    isError: balanceError, refetch, isFetching,
   } = useReadContract({
     address:      USDC_ADDRESS,
     abi:          erc20Abi,
     functionName: 'balanceOf',
     args:         address ? [address] : undefined,
     chainId:      ARC_MAINNET_CHAIN_ID,
-    query: { enabled: !!address, refetchInterval: 20_000, retry: 2 },
+    query: { enabled: !!address, refetchInterval: 20_000 },
   })
 
   const { data: blockNumber } = useBlockNumber({
@@ -287,11 +287,6 @@ export function Dashboard({ onNavigate }: Props) {
               <div>
                 <p className="display text-4xl font-bold" style={{ color: 'var(--danger)' }}>—</p>
                 <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>Balance unavailable — tap refresh</p>
-                {balanceReadError && (
-                  <p className="mono text-[10px] mt-1 break-all" style={{ color: 'rgba(255,100,100,0.7)' }}>
-                    {balanceReadError.message?.slice(0, 120) ?? String(balanceReadError)}
-                  </p>
-                )}
               </div>
             ) : (
               <div>
