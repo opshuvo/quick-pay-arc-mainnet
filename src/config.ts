@@ -19,11 +19,14 @@ export const config = createConfig({
   connectors: [
     injected({ shimDisconnect: true }),
   ],
+  // Disable Multicall3 batching for Arc Mainnet only.
+  // Arc's USDC at 0x3600...0000 is a native precompile that reverts when called
+  // via Multicall3.aggregate3 — all useReadContract calls must be direct eth_call.
+  batch: {
+    [arc.id]: { multicall: false },
+  },
   transports: {
-    // batch: false disables Multicall3 batching — Arc Mainnet's USDC precompile
-    // at 0x3600...0000 reverts when called via Multicall3.aggregate3, so all
-    // useReadContract calls must go as direct eth_call instead of being batched.
-    [arc.id]: http('https://rpc.mainnet.arc.io', { batch: false }),
+    [arc.id]: http('https://rpc.mainnet.arc.io'),
     [mainnet.id]: http(), // ENS resolution
   },
 })
