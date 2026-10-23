@@ -86,7 +86,7 @@ export function Dashboard({ onNavigate }: Props) {
 
   const {
     data: rawBalance, isLoading: balanceLoading,
-    isError: balanceError, refetch, isFetching,
+    isError: balanceError, error: balanceErr, refetch, isFetching,
   } = useReadContract({
     address:      USDC_ADDRESS,
     abi:          erc20Abi,
@@ -95,6 +95,18 @@ export function Dashboard({ onNavigate }: Props) {
     chainId:      ARC_MAINNET_CHAIN_ID,
     query: { enabled: !!address, refetchInterval: 20_000 },
   })
+
+  // Temporary diagnostic: log full error to console on every balance failure
+  if (balanceErr) {
+    const e = balanceErr as Error & { cause?: unknown }
+    console.error('[QuickPay] balanceOf error:', {
+      name:    e.name,
+      message: e.message,
+      cause:   e.cause,
+      stack:   e.stack?.slice(0, 300),
+      full:    String(e),
+    })
+  }
 
   const { data: blockNumber } = useBlockNumber({
     chainId: ARC_MAINNET_CHAIN_ID,
@@ -286,7 +298,23 @@ export function Dashboard({ onNavigate }: Props) {
             ) : balanceError ? (
               <div>
                 <p className="display text-4xl font-bold" style={{ color: 'var(--danger)' }}>—</p>
-                <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>Balance unavailable — tap refresh</p>
+                <p className="text-xs mt-1 font-semibold" style={{ color: 'var(--danger)' }}>Balance unavailable — tap refresh</p>
+                {balanceErr && (() => {
+                  const e = balanceErr as Error & { cause?: { message?: string; shortMessage?: string } }
+                  const cause = e.cause?.shortMessage ?? e.cause?.message ?? ''
+                  return (
+                    <div className="mt-2 space-y-0.5">
+                      <p className="mono text-[10px] break-all" style={{ color: 'rgba(255,130,130,0.85)' }}>
+                        {e.name}: {e.message?.slice(0, 160)}
+                      </p>
+                      {cause && (
+                        <p className="mono text-[10px] break-all" style={{ color: 'rgba(255,130,130,0.7)' }}>
+                          cause: {cause.slice(0, 120)}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
             ) : (
               <div>
