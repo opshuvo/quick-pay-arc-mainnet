@@ -100,31 +100,29 @@ export function Dashboard({ onNavigate }: Props) {
   const fetchBalance = useCallback(async () => {
     if (!address) return
     // Wait for the wallet client to resolve before attempting any read.
-    // On first render useConnectorClient returns undefined asynchronously;
-    // running before it resolves skips the wallet path and goes straight to
-    // the HTTP fallback, which can fail on some mobile networks.
+    // useConnectorClient returns undefined on first render and resolves async.
     if (walletClient === undefined) return
     setIsFetching(true)
     setBalanceLoading(rawBalance === undefined)
     setBalanceError(false)
+    // Single outer finally ensures balanceLoading + isFetching always clear,
+    // regardless of which code path (wallet success, wallet fail → HTTP, all fail) runs.
     try {
-      // Primary: use the wallet client's own EIP-1193 transport (wallet's RPC).
-      // This uses whatever RPC MetaMask has configured for chain 5042 — different
-      // infrastructure from our HTTP transport, bypassing network-level blocks.
-      const result = await readContract(walletClient, {
-        address:      USDC_ADDRESS,
-        abi:          erc20Abi,
-        functionName: 'balanceOf',
-        args:         [address],
-      })
-      setRawBalance(result)
-      setBalanceError(false)
-      return
-    } catch (walletErr) {
-      console.warn('[QuickPay] wallet-client balanceOf failed, trying HTTP transport:', walletErr)
-    }
-    // Fallback: HTTP transport across all official Arc RPC endpoints.
-    try {
+      try {
+        // Primary: wallet client's EIP-1193 transport (wallet's own RPC for chain 5042).
+        const result = await readContract(walletClient, {
+          address:      USDC_ADDRESS,
+          abi:          erc20Abi,
+          functionName: 'balanceOf',
+          args:         [address],
+        })
+        setRawBalance(result)
+        setBalanceError(false)
+        return   // success — outer finally still runs
+      } catch (walletErr) {
+        console.warn('[QuickPay] wallet-client balanceOf failed, trying HTTP transport:', walletErr)
+      }
+      // Fallback: direct HTTP transport across all official Arc RPC endpoints.
       const { createPublicClient, http, fallback } = await import('viem')
       const { arc } = await import('viem/chains')
       const publicClient = createPublicClient({
@@ -140,7 +138,7 @@ export function Dashboard({ onNavigate }: Props) {
       setRawBalance(result)
       setBalanceError(false)
     } catch (httpErr) {
-      console.error('[QuickPay] balanceOf HTTP fallback also failed:', httpErr)
+      console.error('[QuickPay] balanceOf all paths failed:', httpErr)
       setBalanceError(true)
     } finally {
       setIsFetching(false)
