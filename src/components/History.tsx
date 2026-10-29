@@ -52,6 +52,9 @@ const CACHE_KEY_PREFIX = 'quickpay:history:'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/** Across SpokePool on Arc Mainnet — USDC transfers to this address are bridge deposits. */
+const ACROSS_SPOKE_POOL = '0x9b4a302a548c7e313c2b74c461db7b84d3074a84'
+
 interface Transfer {
   key:         string
   txHash:      `0x${string}`
@@ -65,6 +68,8 @@ interface Transfer {
   direction:   'sent' | 'received'
   /** true = came from localStorage cache, not fetched this session */
   fromCache:   boolean
+  /** true = this transfer is a known bridge deposit via Across SpokePool */
+  isBridge?:   boolean
 }
 
 type FilterTab = 'all' | 'sent' | 'received'
@@ -168,7 +173,10 @@ function decodeLog(log: RawLog, myAddr: string, direction: 'sent' | 'received'):
     const key       = `${txHash}-${logIndex}`
     const blockNumber = log.blockNumber ?? 0n
 
-    return { key, txHash, logIndex, from, to, value, blockNumber, timestamp, direction, fromCache: false }
+    // Tag transfers sent to the Across SpokePool as bridge deposits
+    const isBridge = direction === 'sent' && to.toLowerCase() === ACROSS_SPOKE_POOL
+
+    return { key, txHash, logIndex, from, to, value, blockNumber, timestamp, direction, fromCache: false, isBridge }
   } catch {
     return null
   }
@@ -637,6 +645,14 @@ export function History({ onBack }: Props) {
                         <span className="text-xs font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {t.isBridge && (
+                          <span
+                            className="text-[9px] font-bold px-1 rounded"
+                            style={{ background: 'rgba(167,139,250,0.14)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.20)' }}
+                          >
+                            bridge
+                          </span>
+                        )}
                         {t.fromCache && (
                           <span
                             className="text-[9px] font-bold px-1 rounded"
@@ -651,7 +667,10 @@ export function History({ onBack }: Props) {
                       </div>
                     </div>
                     <p className="mono text-[11px] mt-0.5 truncate" style={{ color: 'var(--subtle)' }}>
-                      {isSent ? `→ ${formatAddress(t.to)}` : `← ${formatAddress(t.from)}`}
+                      {isSent
+                        ? t.isBridge ? '→ Across SpokePool (bridge deposit)' : `→ ${formatAddress(t.to)}`
+                        : `← ${formatAddress(t.from)}`
+                      }
                     </p>
                   </div>
                   {isOpen
