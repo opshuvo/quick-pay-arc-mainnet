@@ -24,12 +24,13 @@ import { NetworkGuard }     from '@/components/NetworkGuard'
 import { QuickPayLogo }     from '@/components/QuickPayLogo'
 import { BridgeSheet }      from '@/components/BridgeSheet'
 import { SplitPayment }     from '@/components/SplitPayment'
+import { SwapSheet }        from '@/components/SwapSheet'
 import { decodePaymentURI } from '@/utils'
 
 export type Tab =
   | 'dashboard' | 'send' | 'receive' | 'scan'
   | 'history'   | 'assistant' | 'recipients' | 'requests'
-  | 'bridge'    | 'split'
+  | 'bridge'    | 'split'     | 'swap'
 
 const PRIMARY_NAV: {
   tab: Tab
@@ -90,6 +91,7 @@ export default function App() {
       case 'assistant':  return <AIAssistant onBack={() => setTab('dashboard')} />
       case 'bridge':     return <BridgeSheet onBack={() => setTab('dashboard')} />
       case 'split':      return <SplitPayment onBack={() => setTab('dashboard')} />
+      case 'swap':       return <SwapSheet onBack={() => setTab('dashboard')} />
     }
   }
 

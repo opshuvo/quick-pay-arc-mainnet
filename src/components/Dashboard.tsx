@@ -12,7 +12,7 @@ import {
   Eye, EyeOff, RefreshCw,
   ArrowUpRight, QrCode, ScanLine, FileText,
   Copy, Check, ExternalLink, Users, HelpCircle,
-  Clock, Shuffle, ArrowLeftRight,
+  Clock, Shuffle, ArrowLeftRight, Repeat2,
 } from 'lucide-react'
 import { ARC_MAINNET_CHAIN_ID } from '@/config'
 import {
@@ -67,6 +67,11 @@ const ACTIONS: {
     tab: 'bridge',    icon: ArrowLeftRight, label: 'Bridge',
     color: '#a78bfa', bg: '#130e22', border: 'rgba(167,139,250,0.22)',
     glow: 'rgba(167,139,250,0.16)',
+  },
+  {
+    tab: 'swap',      icon: Repeat2,       label: 'Swap',
+    color: '#0de8ff', bg: '#071e23', border: 'rgba(13,232,255,0.18)',
+    glow: 'rgba(13,232,255,0.14)',
   },
   {
     tab: 'split',     icon: Shuffle,     label: 'Split',
