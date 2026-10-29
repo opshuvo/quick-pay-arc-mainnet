@@ -22,11 +22,14 @@ import { SavedRecipients }  from '@/components/SavedRecipients'
 import { AIAssistant }      from '@/components/AIAssistant'
 import { NetworkGuard }     from '@/components/NetworkGuard'
 import { QuickPayLogo }     from '@/components/QuickPayLogo'
+import { BridgeSheet }      from '@/components/BridgeSheet'
+import { SplitPayment }     from '@/components/SplitPayment'
 import { decodePaymentURI } from '@/utils'
 
 export type Tab =
   | 'dashboard' | 'send' | 'receive' | 'scan'
   | 'history'   | 'assistant' | 'recipients' | 'requests'
+  | 'bridge'    | 'split'
 
 const PRIMARY_NAV: {
   tab: Tab
@@ -85,6 +88,8 @@ export default function App() {
       case 'history':    return <HistoryView onBack={() => setTab('dashboard')} />
       case 'recipients': return <SavedRecipients onBack={() => setTab('dashboard')} onSendTo={handleSendTo} />
       case 'assistant':  return <AIAssistant onBack={() => setTab('dashboard')} />
+      case 'bridge':     return <BridgeSheet onBack={() => setTab('dashboard')} />
+      case 'split':      return <SplitPayment onBack={() => setTab('dashboard')} />
     }
   }
 

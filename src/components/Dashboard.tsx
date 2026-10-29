@@ -12,7 +12,7 @@ import {
   Eye, EyeOff, RefreshCw,
   ArrowUpRight, QrCode, ScanLine, FileText,
   Copy, Check, ExternalLink, Users, HelpCircle,
-  Clock,
+  Clock, Shuffle, ArrowLeftRight,
 } from 'lucide-react'
 import { ARC_MAINNET_CHAIN_ID } from '@/config'
 import {
@@ -64,6 +64,16 @@ const ACTIONS: {
     glow: 'rgba(78,155,255,0.16)',
   },
   {
+    tab: 'bridge',    icon: ArrowLeftRight, label: 'Bridge',
+    color: '#a78bfa', bg: '#130e22', border: 'rgba(167,139,250,0.22)',
+    glow: 'rgba(167,139,250,0.16)',
+  },
+  {
+    tab: 'split',     icon: Shuffle,     label: 'Split',
+    color: '#22d987', bg: '#0c1d14', border: 'rgba(34,217,135,0.18)',
+    glow: 'rgba(34,217,135,0.14)',
+  },
+  {
     tab: 'assistant', icon: HelpCircle,  label: 'Help',
     color: '#ffb020', bg: '#1c1500', border: 'rgba(255,176,32,0.20)',
     glow: 'rgba(255,176,32,0.14)',
@@ -108,14 +118,27 @@ export function Dashboard({ onNavigate }: Props) {
     // Single outer finally ensures balanceLoading + isFetching always clear,
     // regardless of which code path (wallet success, wallet fail → HTTP, all fail) runs.
     try {
+      // Wrap a promise with a timeout — returns a rejected promise after ms
+      function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+        return Promise.race([
+          p,
+          new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
+          ),
+        ])
+      }
       try {
         // Primary: wallet client's EIP-1193 transport (wallet's own RPC for chain 5042).
-        const result = await readContract(walletClient, {
-          address:      USDC_ADDRESS,
-          abi:          erc20Abi,
-          functionName: 'balanceOf',
-          args:         [address],
-        })
+        // 15-second timeout prevents indefinite hang when MetaMask's Arc RPC is slow.
+        const result = await withTimeout(
+          readContract(walletClient, {
+            address:      USDC_ADDRESS,
+            abi:          erc20Abi,
+            functionName: 'balanceOf',
+            args:         [address],
+          }),
+          15_000,
+        )
         setRawBalance(result)
         setBalanceError(false)
         return   // success — outer finally still runs
@@ -123,20 +146,36 @@ export function Dashboard({ onNavigate }: Props) {
         console.warn('[QuickPay] wallet-client balanceOf failed, trying HTTP transport:', walletErr)
       }
       // Fallback: direct HTTP transport across all official Arc RPC endpoints.
-      const { createPublicClient, http, fallback } = await import('viem')
-      const { arc } = await import('viem/chains')
-      const publicClient = createPublicClient({
-        chain: arc,
-        transport: fallback(arc.rpcUrls.default.http.map(url => http(url))),
-      })
-      const result = await readContract(publicClient, {
-        address:      USDC_ADDRESS,
-        abi:          erc20Abi,
-        functionName: 'balanceOf',
-        args:         [address],
-      })
-      setRawBalance(result)
-      setBalanceError(false)
+      // Retry up to 2 times with 2-second back-off to handle transient RPC rate limits.
+      let lastHttpErr: unknown
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2_000 * attempt))
+        try {
+          const { createPublicClient, http, fallback } = await import('viem')
+          const { arc } = await import('viem/chains')
+          const publicClient = createPublicClient({
+            chain: arc,
+            transport: fallback(arc.rpcUrls.default.http.map(url => http(url, { timeout: 12_000 }))),
+          })
+          const result = await withTimeout(
+            readContract(publicClient, {
+              address:      USDC_ADDRESS,
+              abi:          erc20Abi,
+              functionName: 'balanceOf',
+              args:         [address],
+            }),
+            14_000,
+          )
+          setRawBalance(result)
+          setBalanceError(false)
+          return  // success — outer finally still runs
+        } catch (e) {
+          lastHttpErr = e
+          console.warn(`[QuickPay] HTTP balanceOf attempt ${attempt + 1} failed:`, e)
+        }
+      }
+      console.error('[QuickPay] balanceOf all paths failed:', lastHttpErr)
+      setBalanceError(true)
     } catch (httpErr) {
       console.error('[QuickPay] balanceOf all paths failed:', httpErr)
       setBalanceError(true)
